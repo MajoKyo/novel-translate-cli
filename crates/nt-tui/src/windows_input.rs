@@ -179,7 +179,15 @@ impl WindowsKeyState {
                 KeyEventKind::Press
             }
         } else {
-            self.physical_down.remove(&identity);
+            // Terminal input may omit the scan code on one half of a key pair.
+            // Keep known physical scans and main/keypad identities distinct.
+            self.physical_down.retain(|pressed| {
+                !(pressed.virtual_key == native.virtual_key
+                    && pressed.enhanced == native.enhanced
+                    && (pressed.scan_code == native.scan_code
+                        || pressed.scan_code == 0
+                        || native.scan_code == 0))
+            });
             if self.down_at_focus_gain.contains(&native.virtual_key)
                 && !is_virtual_key_down(native.virtual_key)
             {
@@ -573,3 +581,7 @@ mod tests {
         assert_eq!(app.selected_screen(), Screen::Tasks);
     }
 }
+
+#[cfg(test)]
+#[path = "windows_input/t15_input_tests.rs"]
+mod t15_input_tests;

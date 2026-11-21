@@ -1,3 +1,5 @@
+pub(crate) mod input_form;
+
 use crate::navigation::Screen;
 use crate::screens::WorkspaceFormSnapshot;
 use crate::screens::empty_state;

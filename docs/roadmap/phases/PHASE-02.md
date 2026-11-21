@@ -772,8 +772,8 @@ Theo dõi 9 checkpoint: 7 checkpoint ban đầu tại [§10.2](#p02-checkpoints)
 | P02-D | [T11](#p02-t11) | Đạt, CP02 phạm vi cũ; bổ sung UI-02 đã công bố tại CP07 | [Hậu kiểm CP02](../evidence/phase-02/P02-CP02.postmerge-r01.md), [CP07](../evidence/phase-02/P02-CP07.postmerge-r01.md) |
 | P02-D | [T12](#p02-t12) | Đạt, CP06 đã công bố | [Hậu kiểm CP06](../evidence/phase-02/P02-CP06.postmerge-r01.md) |
 | P02-E | [T13](#p02-t13) | Đạt, CP07 đã công bố | [B T13 r02](../evidence/phase-02/CP07-integration-r02/b-t13-r02/P02-T13.review-r02.md), [hậu kiểm CP07](../evidence/phase-02/P02-CP07.postmerge-r01.md) |
-| P02-F | [T14](#p02-t14) | Đang chuẩn bị/sửa theo phiếu CP08; chưa B nghiệm thu | [Phiếu T14](../evidence/phase-02/CP08-T14-r01/assignment-r01.md) |
-| P02-F | [T15](#p02-t15) | Chờ T14 B Đạt, chưa triển khai | [Lịch CP08](#p02-cp08) |
+| P02-F | [T14](#p02-t14) | B r03 Đạt riêng T14; F01/F02 đã đóng. T15 đã nhận contract; CP08 đang ghép và chưa công bố | [B T14 r03](../evidence/phase-02/CP08-T14-r03/b-r03/P02-T14.review-r03.md) |
+| P02-F | [T15](#p02-t15) | B r01 Đạt trial/proposal và Master đã duyệt exact patch. Đang ghép official CP08; chưa công bố hoặc nghiệm thu UT06/M2 | [B T15 r01](../evidence/phase-02/CP08-T15-r01/b-r01/P02-T15.review-r01.md), [grant](../evidence/phase-02/CP08-T15-r01/master-protected-grant-r01.json) |
 | P02-G | [T16](#p02-t16) | Chờ CP08 công bố, chưa triển khai | [Lịch CP09](#p02-cp09) |
 | P02-G | [T17](#p02-t17) | Chờ T16 B Đạt, chưa triển khai | [Lịch CP09](#p02-cp09) |
 | P02-G | [T18](#p02-t18) | Chờ T17 B Đạt, chưa triển khai | [Lịch CP09](#p02-cp09) |

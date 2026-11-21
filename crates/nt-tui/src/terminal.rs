@@ -8,18 +8,22 @@ use crate::{TuiError, TuiErrorKind};
 #[cfg(not(windows))]
 use crossterm::event;
 use crossterm::event::{Event, MouseButton, MouseEventKind};
-use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{
-    cursor::{Hide, MoveTo, Show},
-    execute, queue,
-    style::Print,
+    cursor::{Hide, Show},
+    execute,
 };
-use ratatui::buffer::{Buffer, CellWidth};
+use ratatui::buffer::Buffer;
+#[cfg(test)]
+use ratatui::buffer::CellWidth;
 use ratatui::layout::Rect;
 use std::io::{self, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Duration;
+
+mod frame;
+use frame::FrameRenderer;
 
 const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -48,6 +52,16 @@ trait TerminalDriver {
         _volumes: &str,
     ) -> io::Result<()> {
         self.draw_shell_with_workspace(area, state, workspace)
+    }
+    fn draw_shell_with_input(
+        &mut self,
+        area: Rect,
+        state: &AppState,
+        workspace: &WorkspaceFormSnapshot,
+        volumes: &str,
+        _form: Option<&crate::rendering::input_form::InputForm>,
+    ) -> io::Result<()> {
+        self.draw_shell_with_volumes(area, state, workspace, volumes)
     }
     fn read_event(&mut self) -> io::Result<Event>;
     fn poll_event(&mut self, _timeout: Duration) -> io::Result<Option<Event>> {
@@ -146,7 +160,10 @@ fn run_shell_with_driver_and_workspace<D: TerminalDriver>(
             {
                 refresh_scroll_layout(&mut state, area, body);
                 let result = match &volume_body {
-                    Some(body) => driver.draw_shell_with_volumes(area, &state, &workspace, body),
+                    Some(body) => {
+                        let form = controls_focused.then(|| imports.input_form()).flatten();
+                        driver.draw_shell_with_input(area, &state, &workspace, body, form.as_ref())
+                    }
                     None => driver.draw_shell_with_workspace(area, &state, &workspace),
                 };
                 result.map_err(|_| TuiErrorKind::Render)?;
@@ -176,6 +193,26 @@ fn run_shell_with_driver_and_workspace<D: TerminalDriver>(
             if let Event::Mouse(mouse) = &event
                 && mouse.kind == MouseEventKind::Down(MouseButton::Left)
             {
+                if imports_visible
+                    && controls_focused
+                    && let Some(form) = imports.input_form()
+                    && let Some(control) = crate::rendering::input_form::hit(
+                        area,
+                        &state,
+                        &form,
+                        mouse.column,
+                        mouse.row,
+                    )
+                    && imports.click_input(control)
+                {
+                    state.focus_workspace();
+                    redraw_needed = true;
+                    continue;
+                }
+                // The edit panel covers the old workspace/picker controls.
+                if imports_visible && controls_focused && imports.input_form().is_some() {
+                    continue;
+                }
                 let workspace_clicked = workspace_visible
                     && crate::rendering::workspace_control_position(
                         area,
@@ -390,6 +427,7 @@ fn attempt_cleanup(action: impl FnOnce() -> io::Result<()>) -> bool {
 }
 
 struct CrosstermTerminal {
+    frame: FrameRenderer,
     #[cfg(windows)]
     windows_input: WindowsInputReader,
     #[cfg(windows)]
@@ -401,13 +439,16 @@ impl CrosstermTerminal {
         #[cfg(windows)]
         {
             Ok(Self {
+                frame: FrameRenderer::default(),
                 windows_input: WindowsInputReader::new()?,
                 capture_volume_clicks: _capture_volume_clicks,
             })
         }
         #[cfg(not(windows))]
         {
-            Ok(Self {})
+            Ok(Self {
+                frame: FrameRenderer::default(),
+            })
         }
     }
 }
@@ -429,6 +470,7 @@ impl TerminalDriver for CrosstermTerminal {
     }
 
     fn enter_alternate_screen(&mut self) -> io::Result<()> {
+        self.frame.invalidate();
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen)
     }
@@ -444,6 +486,7 @@ impl TerminalDriver for CrosstermTerminal {
     }
 
     fn leave_alternate_screen(&mut self) -> io::Result<()> {
+        self.frame.invalidate();
         let mut stdout = io::stdout();
         execute!(stdout, LeaveAlternateScreen)
     }
@@ -454,7 +497,7 @@ impl TerminalDriver for CrosstermTerminal {
 
     fn draw_shell(&mut self, area: Rect, state: &AppState) -> io::Result<()> {
         let mut stdout = io::stdout();
-        draw_shell_to(&mut stdout, area, state)
+        draw_shell_to(&mut stdout, &mut self.frame, area, state)
     }
 
     fn draw_shell_with_workspace(
@@ -464,7 +507,7 @@ impl TerminalDriver for CrosstermTerminal {
         workspace: &WorkspaceFormSnapshot,
     ) -> io::Result<()> {
         let mut stdout = io::stdout();
-        draw_shell_to_with_workspace(&mut stdout, area, state, workspace)
+        draw_shell_to_with_workspace(&mut stdout, &mut self.frame, area, state, workspace)
     }
 
     fn draw_shell_with_volumes(
@@ -476,7 +519,23 @@ impl TerminalDriver for CrosstermTerminal {
     ) -> io::Result<()> {
         let mut buffer = Buffer::empty(area);
         crate::rendering::render_with_volumes(&mut buffer, area, state, workspace, volumes);
-        draw_buffer(&mut io::stdout(), area, &buffer)
+        self.frame.draw(&mut io::stdout(), &buffer)
+    }
+
+    fn draw_shell_with_input(
+        &mut self,
+        area: Rect,
+        state: &AppState,
+        workspace: &WorkspaceFormSnapshot,
+        volumes: &str,
+        form: Option<&crate::rendering::input_form::InputForm>,
+    ) -> io::Result<()> {
+        let mut buffer = Buffer::empty(area);
+        crate::rendering::render_with_volumes(&mut buffer, area, state, workspace, volumes);
+        let caret = form
+            .and_then(|form| crate::rendering::input_form::render(&mut buffer, area, state, form));
+        self.frame
+            .draw_with_cursor(&mut io::stdout(), &buffer, caret)
     }
 
     fn read_event(&mut self) -> io::Result<Event> {
@@ -506,32 +565,28 @@ impl TerminalDriver for CrosstermTerminal {
     }
 }
 
-fn draw_shell_to<W: Write>(writer: &mut W, area: Rect, state: &AppState) -> io::Result<()> {
+fn draw_shell_to<W: Write>(
+    writer: &mut W,
+    frame: &mut FrameRenderer,
+    area: Rect,
+    state: &AppState,
+) -> io::Result<()> {
     let buffer = render_shell_buffer(area, state);
-    draw_buffer(writer, area, &buffer)
+    frame.draw(writer, &buffer)
 }
 
 fn draw_shell_to_with_workspace<W: Write>(
     writer: &mut W,
+    frame: &mut FrameRenderer,
     area: Rect,
     state: &AppState,
     workspace: &WorkspaceFormSnapshot,
 ) -> io::Result<()> {
     let buffer = render_shell_buffer_with_workspace(area, state, workspace);
-    draw_buffer(writer, area, &buffer)
+    frame.draw(writer, &buffer)
 }
 
-fn draw_buffer<W: Write>(writer: &mut W, area: Rect, buffer: &Buffer) -> io::Result<()> {
-    queue!(writer, Clear(ClearType::All))?;
-    for row in 0..area.height {
-        let line = buffer_row_text(buffer, area, row);
-        queue!(writer, MoveTo(area.x, area.y + row), Print(line))?;
-    }
-    // Leave the cursor at a known point; terminal ownership remains with this module.
-    queue!(writer, MoveTo(area.x, area.y))?;
-    writer.flush()
-}
-
+#[cfg(test)]
 fn buffer_row_text(buffer: &Buffer, area: Rect, row: u16) -> String {
     let mut line = String::new();
     let mut column = 0;
