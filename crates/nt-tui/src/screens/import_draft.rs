@@ -1,4 +1,5 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crate::rendering::input_form::{InputControl, InputForm};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use nt_application::volume_import::{
     VolumeId,
     chapter_map::edit::{ChapterBoundary, ChapterEdit},
@@ -19,6 +20,7 @@ pub(super) struct Draft {
     form: Form,
     preview_input: Option<Form>,
     preview_error: Option<BookError>,
+    focus: InputControl,
 }
 
 enum Form {
@@ -54,6 +56,8 @@ enum BoundaryEdit {
 pub(super) enum DraftAction {
     Preview(BookEdit),
     Save(BookEdit),
+    Dismiss,
+    Discard,
     None,
 }
 
@@ -143,6 +147,11 @@ impl Draft {
             }
             _ => return None,
         };
+        let focus = if matches!(&form, Form::Rename { .. } | Form::Boundary { .. }) {
+            InputControl::Text
+        } else {
+            InputControl::Primary
+        };
         Some(Self {
             id,
             workspace,
@@ -150,6 +159,7 @@ impl Draft {
             form,
             preview_input: None,
             preview_error: None,
+            focus,
         })
     }
 
@@ -157,6 +167,78 @@ impl Draft {
         self.workspace.series == workspace.series
             && self.workspace.path == workspace.path
             && &self.volume == volume
+    }
+
+    fn has_text(&self) -> bool {
+        matches!(self.form, Form::Rename { .. } | Form::Boundary { .. })
+    }
+
+    pub(super) fn input_form(&self) -> InputForm {
+        let (title, label, text, primary, message) = match &self.form {
+            Form::Rename { text, .. } => (
+                "Đổi tên chương",
+                "Tên chương mới:",
+                Some(text.clone()),
+                "Xem trước",
+                self.preview_error
+                    .as_ref()
+                    .map_or_else(String::new, |error| error.message().to_owned()),
+            ),
+            Form::Boundary {
+                edit,
+                boundary,
+                limit,
+                text,
+                ..
+            } => {
+                let title = match edit {
+                    BoundaryEdit::Split(_) => "Tách chương",
+                    BoundaryEdit::Move(_, _) => "Dời ranh giới",
+                };
+                let mut message = format!("Vị trí hợp lệ: {}–{limit}.", boundary.offset);
+                if let Some(error) = &self.preview_error {
+                    message.push_str(&format!("\n{}", error.message()));
+                }
+                (title, "Vị trí:", Some(text.clone()), "Xem trước", message)
+            }
+            Form::Classify { .. } => ("Phân loại vùng", "", None, "Xem lựa chọn", self.body()),
+            Form::Confirm { can_save, .. } => (
+                "Xác nhận chỉnh sửa",
+                "",
+                None,
+                if *can_save { "Lưu" } else { "Xem trước" },
+                self.body(),
+            ),
+        };
+        let focused = if self.focus == InputControl::Text && text.is_none() {
+            InputControl::Primary
+        } else {
+            self.focus
+        };
+        InputForm {
+            title,
+            label,
+            text,
+            message,
+            primary,
+            focused,
+        }
+    }
+
+    pub(super) fn resume_focus(&mut self) {
+        self.focus = if self.has_text() {
+            InputControl::Text
+        } else {
+            InputControl::Primary
+        };
+    }
+
+    pub(super) fn focus_control(&mut self, control: InputControl) {
+        self.focus = if control == InputControl::Text && !self.has_text() {
+            InputControl::Primary
+        } else {
+            control
+        };
     }
 
     pub(super) fn body(&self) -> String {
@@ -193,6 +275,28 @@ impl Draft {
     }
 
     pub(super) fn handle(&mut self, key: KeyEvent) -> DraftAction {
+        let focus = self.input_form().focused;
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.focus = focus.next(
+                self.has_text(),
+                key.code == KeyCode::BackTab || key.modifiers.contains(KeyModifiers::SHIFT),
+            );
+            return DraftAction::None;
+        }
+        if key.code == KeyCode::Enter {
+            match focus {
+                InputControl::Back => return DraftAction::Dismiss,
+                InputControl::Discard => return DraftAction::Discard,
+                _ => {}
+            }
+        }
+        if focus != InputControl::Text && matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace)
+        {
+            return DraftAction::None;
+        }
+        if matches!(focus, InputControl::Back | InputControl::Discard) {
+            return DraftAction::None;
+        }
         match &mut self.form {
             Form::Rename {
                 chapter,

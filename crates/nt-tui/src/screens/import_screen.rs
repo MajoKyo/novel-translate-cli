@@ -11,6 +11,7 @@ use crate::import_commands::{
 };
 use crate::input::EventLayer;
 use crate::navigation::Screen;
+use crate::rendering::input_form::{InputControl, InputForm};
 
 #[path = "import_draft.rs"]
 mod draft;
@@ -472,6 +473,7 @@ impl ImportScreen {
         };
         if let Some(index) = self.active_draft() {
             self.editing = true;
+            self.drafts[index].resume_focus();
             self.notice = if &self.drafts[index].workspace == workspace {
                 "Đang mở bản nháp. F2: Bỏ bản nháp.".into()
             } else {
@@ -495,10 +497,21 @@ impl ImportScreen {
         self.editing = true;
     }
 
-    fn edit_event(&mut self, key: KeyEvent) -> bool {
+    fn edit_event(&mut self, mut key: KeyEvent) -> bool {
         let Some(index) = self.active_draft() else {
             return false;
         };
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.drafts[index].handle(key);
+            return true;
+        }
+        if key.code == KeyCode::Enter {
+            key.code = match self.drafts[index].input_form().focused {
+                InputControl::Back => KeyCode::Esc,
+                InputControl::Discard => KeyCode::F(2),
+                _ => KeyCode::Enter,
+            };
+        }
         match key.code {
             KeyCode::Esc => {
                 self.editing = false;
@@ -543,11 +556,62 @@ impl ImportScreen {
                             ChangeResult::Saved(draft_id, volume, result)
                         })
                     }
+                    DraftAction::Dismiss => {
+                        self.editing = false;
+                        self.notice.clear();
+                    }
+                    DraftAction::Discard => {
+                        self.drafts.remove(index);
+                        self.editing = false;
+                        self.notice = "Đã bỏ bản nháp.".into();
+                    }
                     DraftAction::None => {}
                 }
                 true
             }
         }
+    }
+
+    fn resume_existing_draft(&mut self) {
+        let index = self.active_draft();
+        self.editing = index.is_some();
+        if let Some(index) = index {
+            self.drafts[index].resume_focus();
+        }
+    }
+
+    pub(crate) fn input_form(&self) -> Option<InputForm> {
+        if self.screen != Screen::VolumesAndChapters || !self.editing {
+            return None;
+        }
+        let index = self.active_draft()?;
+        let mut form = self.drafts[index].input_form();
+        let mut notices = Vec::new();
+        if !self.notice.is_empty() {
+            notices.push(self.notice.clone());
+        }
+        if let Some(error) = &self.read_error {
+            notices.push(error.message().to_owned());
+        }
+        if !form.message.is_empty() {
+            notices.push(form.message);
+        }
+        form.message = notices.join("\n");
+        Some(form)
+    }
+
+    pub(crate) fn click_input(&mut self, control: InputControl) -> bool {
+        if !self.editing {
+            return false;
+        }
+        let Some(index) = self.active_draft() else {
+            return false;
+        };
+        self.drafts[index].focus_control(control);
+        if control != InputControl::Text {
+            return self.edit_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        }
+        true
     }
 
     pub(crate) fn body(&self, focused: bool) -> String {
@@ -649,14 +713,29 @@ impl ImportScreen {
 impl EventLayer for ImportScreen {
     fn handle_event(&mut self, event: &Event) -> bool {
         let Event::Key(key) = event else { return false };
-        if key.kind != KeyEventKind::Press
-            || !(key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT)
-            || matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+        let alt_graph_text = self.screen == Screen::VolumesAndChapters
+            && self.editing
+            && matches!(key.code, KeyCode::Char(character) if !character.is_control())
+            && (key.modifiers == (KeyModifiers::CONTROL | KeyModifiers::ALT)
+                || key.modifiers
+                    == (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT));
+        if !(key.modifiers == KeyModifiers::NONE
+            || key.modifiers == KeyModifiers::SHIFT
+            || alt_graph_text)
         {
             return false;
         }
         if self.screen == Screen::VolumesAndChapters && self.editing {
+            if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                || (key.kind == KeyEventKind::Repeat
+                    && !matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace))
+            {
+                return true;
+            }
             return self.edit_event(*key);
+        }
+        if key.kind != KeyEventKind::Press || matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            return false;
         }
         if key.code == KeyCode::Enter && self.picker_focused
             || matches!(key.code, KeyCode::Char('i' | 'I'))
@@ -690,7 +769,7 @@ impl EventLayer for ImportScreen {
             | KeyCode::Char('[' | ']') => {
                 self.shift_position(key.code);
             }
-            KeyCode::Char('e' | 'E') => self.editing = self.active_draft().is_some(),
+            KeyCode::Char('e' | 'E') => self.resume_existing_draft(),
             KeyCode::Char(action) if "pbnmsdk".contains(action.to_ascii_lowercase()) => {
                 self.start_draft(action.to_ascii_lowercase())
             }
